@@ -1,0 +1,22 @@
+[tool.poetry]
+name = "crews"
+version = "0.1.0"
+description = ""
+authors = ["Pearse Hutson <pearse.2008@gmail.com>"]
+readme = "README.md"
+
+[tool.poetry.dependencies]
+python = ">=3.12,<3.13"
+crewai = {extras = ["tools"], version = "^0.32.0"}
+
+
+duckduckgo-search = "^6.1.7"
+browserbase = "^0.1.5"
+langchain-anthropic = "<=0.1.15"
+python-dotenv = "^1.0.1"
+[build-system]
+requires = ["poetry-core"]
+build-backend = "poetry.core.masonry.api"
+
+[tool.poetry.scripts]
+run_crew = 'crews.index:run'
