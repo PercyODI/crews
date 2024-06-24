@@ -3,21 +3,17 @@ import os
 import time
 from textwrap import dedent
 from crewai import Agent, Task, Crew, Process
+from crewai.tasks.task_output import TaskOutput
 from crewai_tools import BrowserbaseLoadTool, EXASearchTool, BaseTool
+from crews.document_edits import DocumentEdits, edit_document, fetch_doc_with_line_numbers, document_edits_example
 from langchain_community.tools import DuckDuckGoSearchRun
 from langchain_anthropic import ChatAnthropic
 
 from dotenv import load_dotenv
 load_dotenv
 
-def fetch_doc_with_line_numbers(doc_path: str):
-    with open(doc_path, 'r', encoding='utf-8') as fh:
-        ret_str = ""
-        count = 0
-        for line in fh:
-            ret_str += f"\n{count}: {line}"
-            count = count + 1
-        return ret_str
+import agentops
+agentops.init()
 
 class DocumentFetchTool(BaseTool):
     name: str = "Document Fetch Tool"
@@ -26,30 +22,35 @@ class DocumentFetchTool(BaseTool):
 
     def _run(self) -> str:
         return fetch_doc_with_line_numbers(self.doc_path)
+
+def edit_callback(file_path: str,output: TaskOutput):
+    print(DocumentEdits.model_validate(output.exported_output))
+    edit_document(file_path=file_path, document_edit=output.exported_output)
+
         
-class DocumentEditTool(BaseTool):
-    name: str= "Document Edit Tool"
-    description: str = "Edits the shared document that the crew is working on."
-    doc_path: str
+# class DocumentEditTool(BaseTool):
+#     name: str= "Document Edit Tool"
+#     description: str = "Edits the shared document that the crew is working on."
+#     doc_path: str
 
-    def _run(self, line_number: int, text: str):
-        data = ""
-        try:
-            with open(self.doc_path, "r", encoding="utf-8") as fh:
-                data = fh.readlines()
-        except FileExistsError:
-            open(self.doc_path, "x")
+#     def _run(self, line_number: int, text: str):
+#         data = ""
+#         try:
+#             with open(self.doc_path, "r", encoding="utf-8") as fh:
+#                 data = fh.readlines()
+#         except FileExistsError:
+#             open(self.doc_path, "x")
         
-        if line_number >= len(data):
-            data.append(text)
-        else:
-            data[line_number] = text
+#         if line_number >= len(data):
+#             data.append(text)
+#         else:
+#             data[line_number] = text
 
-        with open(self.doc_path, "w", encoding="utf-8") as fh:
-            fh.writelines(data)
+#         with open(self.doc_path, "w", encoding="utf-8") as fh:
+#             fh.writelines(data)
 
-        ret = "Document has been successfully edited. Here is the updated file:\n" + fetch_doc_with_line_numbers(self.doc_path)
-        return ret
+#         ret = "Document has been successfully edited. Here is the updated file:\n" + fetch_doc_with_line_numbers(self.doc_path)
+#         return ret
 
 def run():
     search_tool = DuckDuckGoSearchRun()
@@ -58,7 +59,8 @@ def run():
     open(doc_path, "x")
 
     docFetchTool = DocumentFetchTool(doc_path=doc_path)
-    docEditTool = DocumentEditTool(doc_path=doc_path)
+    # docEditTool = DocumentEditTool(doc_path=doc_path)
+    # editDocumentCallback = edit_callback_with_filepath(doc_path)
 
     anthropic_llm = ChatAnthropic(
         model=os.environ.get("CLAUDE_MODEL"),
@@ -103,7 +105,7 @@ def run():
     writer = Agent(
         role='Writer',
         goal='Craft immersive, interactive MMO-style or D&D-style campaigns about {theme}',
-        # verbose=True,
+        verbose=True,
         memory=True,
         backstory=(dedent(
             """\
@@ -114,7 +116,7 @@ def run():
         )),
         allow_delegation=False,
         llm=anthropic_llm,
-        tools=[docEditTool, docFetchTool, search_tool],
+        tools=[docFetchTool, search_tool],
         max_iter=5
     )
 
@@ -122,7 +124,7 @@ def run():
     game_master = Agent(
         role='Game Master',
         goal='Collaborate with the writer to create immersive game sessions, deliver engaging content, and integrate user choices with the Personal Trainer\'s workout suggestions',
-        # verbose=True,
+        verbose=True,
         backstory=(dedent(
             """\
         	As the Game Master, your role is to bring the game world to life, working closely with the writer to craft captivating stories, memorable characters, and interactive scenarios. 
@@ -134,7 +136,7 @@ def run():
         )),
         allow_delegation=True,
         llm=anthropic_llm,
-        tools=[docEditTool, docFetchTool],
+        tools=[docFetchTool],
         max_iter=5
     )
 
@@ -142,7 +144,7 @@ def run():
     editor = Agent(
         role='Editor',
         goal='Review and refine documents for grammatical accuracy, completeness, and coherence',
-        # verbose=True,
+        verbose=True,
         backstory=(dedent(
             """\
             As a meticulous Editor, your mission is to ensure that all documents produced by the team are polished, error-free, and effectively convey the intended message.
@@ -204,19 +206,18 @@ def run():
     )
 
     # Develop campaign task
-    campaign_task = Task(
+    campaign_task_outline = Task(
         description=(dedent(
             """
-            Craft a new workout MMO or D&D campaign, based on the theme: {theme}.
+            Craft a new workout MMO or D&D campaign outline, based on the theme: {theme}.
             The world needs to be defined, with an initial cast of characters, locations, and existing storylines that the player will drop into.
             """
         )),
-        expected_output=(
-            'A new campaign overview document, listing all the details that a Game Master needs to run stories in the campaign. The document is formatted in markdown. '
-            'Use the Document Edit Tool to create the document.' 
-        ),
+        expected_output='A new campaign outline document, listing all the sections that will be filled out later, that a Game Master needs to run stories in the campaign.' + document_edits_example,
         # tools=[search_tool],
-        output_file='campaign_doc.md',
+        # output_file='campaign_doc.md',
+        callback=lambda e: edit_callback(doc_path, e),
+        output_pydantic=DocumentEdits,
         agent=writer,
         # human_input=True
     )
@@ -229,13 +230,11 @@ def run():
             Ensure the content is engaging and aligns with the game's tone and style.
             """
         ),
-        expected_output=(
-            'Edited and refined versions of given document'
-            'Use the Document Fetch Tool to fetch the document, and the Document Edit Tool to make alterations.'
-        ),
+        expected_output='Edited and refined versions of given document.' + document_edits_example,
         agent=editor,
-        output_file='campaign_doc.md',
-        context=[campaign_task]
+        callback=lambda e: edit_callback(doc_path, e),
+        output_pydantic=DocumentEdits,
+        context=[campaign_task_outline]
     )
 
     # Write first session
@@ -259,7 +258,7 @@ def run():
     # Forming the story-focused crew with some enhanced configurations
     crew = Crew(
         agents=[writer, game_master, narrator, editor],
-        tasks=[campaign_task, editing_task],
+        tasks=[campaign_task_outline, editing_task],
         process=Process.sequential,  # Optional: Sequential task execution is default
         memory=True,
         cache=True,
