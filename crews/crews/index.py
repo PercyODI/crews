@@ -1,5 +1,6 @@
 import math
 import os
+from pathlib import Path
 import time
 from textwrap import dedent
 from crewai import Agent, Task, Crew, Process
@@ -12,8 +13,8 @@ from langchain_anthropic import ChatAnthropic
 from dotenv import load_dotenv
 load_dotenv
 
-import agentops
-agentops.init()
+# import agentops
+# agentops.init()
 
 class DocumentFetchTool(BaseTool):
     name: str = "Document Fetch Tool"
@@ -55,10 +56,11 @@ def edit_callback(file_path: str,output: TaskOutput):
 def run():
     search_tool = DuckDuckGoSearchRun()
 
-    doc_path = "campaign_" + str(math.floor(time.time())) + ".md"
-    open(doc_path, "x")
+    campaign_dir = Path("./campaign_" + str(math.floor(time.time())))
+    os.makedirs(campaign_dir, exist_ok=True)
 
-    docFetchTool = DocumentFetchTool(doc_path=doc_path)
+
+    # docFetchTool = DocumentFetchTool(doc_path=doc_path)
     # docEditTool = DocumentEditTool(doc_path=doc_path)
     # editDocumentCallback = edit_callback_with_filepath(doc_path)
 
@@ -116,7 +118,7 @@ def run():
         )),
         allow_delegation=False,
         llm=anthropic_llm,
-        tools=[docFetchTool, search_tool],
+        tools=[search_tool],
         max_iter=5
     )
 
@@ -136,7 +138,7 @@ def run():
         )),
         allow_delegation=True,
         llm=anthropic_llm,
-        tools=[docFetchTool],
+        tools=[],
         max_iter=5
     )
 
@@ -162,7 +164,8 @@ def run():
         )),
         allow_delegation=True,
         llm=anthropic_llm,
-        tools=[docFetchTool]
+        tools=[],
+        max_iter=5
     )
 
     # Creating a narrator
@@ -189,7 +192,7 @@ def run():
         )),
         allow_delegation=True,
         llm=anthropic_llm,
-        tools=[docFetchTool]
+        tools=[]
     )
 
     # Setting a specific manager agent
@@ -205,21 +208,70 @@ def run():
         tools=[search_tool]
     )
 
-    # Develop campaign task
+    # Develop campaign outline
     campaign_task_outline = Task(
         description=(dedent(
             """
-            Craft a new workout MMO or D&D campaign outline, based on the theme: {theme}.
+            Craft a new workout Choose-Your-Own-Adventure campaign outline, based on this theme: {theme}.
             The world needs to be defined, with an initial cast of characters, locations, and existing storylines that the player will drop into.
+            Note: You avoid the word "Aetheria" at ALL COSTS.
+            The first task is to create the outline of this document. A good solid outline will allow us to fill in the sections in a well defined manner.
             """
         )),
-        expected_output='A new campaign outline document, listing all the sections that will be filled out later, that a Game Master needs to run stories in the campaign.' + document_edits_example,
-        # tools=[search_tool],
-        # output_file='campaign_doc.md',
-        callback=lambda e: edit_callback(doc_path, e),
-        output_pydantic=DocumentEdits,
+        expected_output=(dedent(
+            """
+            A markdown document containing only header lines (#, ##, and ###).
+            The headers outline all details needed to run a full campaign.
+                                
+            Example:
+            
+            # Title
+            ## Key Locations
+            ### Key Location One
+            ### Key Location Two
+            
+            ## Protaganists
+            ### Protaganist One
+            ### Protaganist Two
+            """
+        )),
+        tools=[search_tool],
+        output_file=str(campaign_dir / "01_outline_init.md"),
+        create_directory=True,
+        # callback=lambda e: edit_callback(doc_path, e),
+        # output_pydantic=DocumentEdits,
         agent=writer,
         # human_input=True
+    )
+
+    game_master_review = Task(
+        agent=game_master,
+        description=(dedent(
+            """
+            Given a document provided by a writer, you review it from the point of view of a Game Master. 
+            With the help of the writer, modify the document provided so that it is effective for you to use as the Game Master.
+            We are starting with just the outline.
+            """
+        )),
+        expected_output=(dedent(
+            """
+            A markdown document containing only header lines (#, ##, and ###).
+            The headers outline all details needed to run a full campaign.
+                                
+            Example:
+            
+            # Title
+            ## Key Locations
+            ### Key Location One
+            ### Key Location Two
+            
+            ## Protaganists
+            ### Protaganist One
+            ### Protaganist Two 
+            """
+        )),
+        output_file=str(campaign_dir / "02_game_master_review.md"),
+        create_directory=True,
     )
 
     editing_task = Task(
@@ -230,11 +282,27 @@ def run():
             Ensure the content is engaging and aligns with the game's tone and style.
             """
         ),
-        expected_output='Edited and refined versions of given document.' + document_edits_example,
+        expected_output=(dedent(
+            """
+            Edited and refined versions of given document.
+
+            A markdown document containing only header lines (#, ##, and ###).
+            The headers outline all details needed to run a full campaign.
+                                
+            Example:
+            
+            # Title
+            ## Key Locations
+            ### Key Location One
+            ### Key Location Two
+            
+            ## Protaganists
+            ### Protaganist One
+            ### Protaganist Two
+            """
+        )),
         agent=editor,
-        callback=lambda e: edit_callback(doc_path, e),
-        output_pydantic=DocumentEdits,
-        context=[campaign_task_outline]
+        output_file=str(campaign_dir / "03_editor_review.md")
     )
 
     # Write first session
@@ -258,13 +326,91 @@ def run():
     # Forming the story-focused crew with some enhanced configurations
     crew = Crew(
         agents=[writer, game_master, narrator, editor],
-        tasks=[campaign_task_outline, editing_task],
+        tasks=[campaign_task_outline, game_master_review, editing_task],
         process=Process.sequential,  # Optional: Sequential task execution is default
         memory=True,
         cache=True,
         max_rpm=100,
         manager_agent=manager,
+        output_log_file=str(campaign_dir / "logs.txt"),
+        verbose=True
     )
 
-    result = crew.kickoff(inputs={'theme': 'A steampunk fantasy world'})
-    print(result)
+    theme = "Time-Travel Conundrum"
+    result = crew.kickoff(inputs={'theme': theme})
+
+    # Now pull the final markdown, split it, and create the task loop.
+
+
+    filling_out_task = Task(
+        description=dedent(
+            """
+            # Context
+            The outline for the {theme} campaign has been written and reviewed. 
+
+            Here is the recent context for what has been written already:
+
+            ---
+            {context}
+            ---
+
+            # Instruction
+            Now we are filling out the individual sections. This is the time to be expressive and narrative, flexing your writing skills!
+            Focus purely on the given section. You will be called to work one section at a time.
+            You will be given the section headers leading to the section you are to work on. That is for context, do not fill them out.
+            You are responsible for filling out this section: 
+            
+            {section}
+            """
+        ),
+        expected_output=(dedent(
+            """
+            The written text that will be inserted at the section you have been given. The text will be in markdown for any formatting. The content is expressive and descriptive. Don't include the section header; that will be inserted for you.
+            """
+        )),
+        tools = [],
+        agent=writer
+    )
+    campaign_filling =Crew(
+        agents=[writer, game_master, narrator, editor],
+        tasks=[filling_out_task],
+        process=Process.sequential,  # Optional: Sequential task execution is default
+        memory=True,
+        cache=True,
+        max_rpm=100,
+        manager_agent=manager,
+        output_log_file=str(campaign_dir / "logs.txt"),
+        verbose=True
+    )
+
+    lines = []
+    with open(campaign_dir / "03_editor_review.md", "r", encoding="utf-8") as er:
+        lines = er.readlines()
+
+    last_2header = ""
+    last_3header = ""
+    open(campaign_dir / "04_design_doc.md", "x")
+    for line in lines:
+        if line == "\n":
+            continue
+        print(f"\n\n Starting line: {line}")
+
+        context = ""
+        with open(campaign_dir / "04_design_doc.md", "r", encoding="utf-8") as c:
+            c_lines = c.readlines()
+            context = "\n".join(c_lines[-10:])
+
+        result = campaign_filling.kickoff(inputs={'section': last_2header + last_3header + line, 'theme': theme, 'context': context})
+
+        with open(campaign_dir / "04_design_doc.md", "a", encoding="utf-8") as dd:
+            dd.writelines([line, result + "\n"])
+
+        if line.startswith("## "):
+            last_2header = line
+            last_3header = ""
+        if line.startswith("### "):
+            last_3header = line
+
+
+    
+
